@@ -2,42 +2,33 @@ import requests
 import time
 import os
 
-# ======================
-# ENV VARIJABLE
-# ======================
+# =========================
+# ENV VARIABLES
+# =========================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")  # nije direktno potreban ovdje, ali OK da postoji
-
-# ======================
-# URL-ovi
-# ======================
-
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FLASK_CHAT_URL = "http://127.0.0.1:5000/chat"
 
-# ======================
-# GLOBAL STATE
-# ======================
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 last_update_id = None
 
 
-# ======================
-# TELEGRAM API
-# ======================
+# =========================
+# TELEGRAM FUNCTIONS
+# =========================
 
 def get_updates():
     global last_update_id
 
     url = f"{TELEGRAM_API}/getUpdates"
-    params = {}
+    params = {"timeout": 30}
 
     if last_update_id:
         params["offset"] = last_update_id + 1
 
-    response = requests.get(url, params=params, timeout=30)
-    return response.json()
+    r = requests.get(url, params=params, timeout=30)
+    return r.json()
 
 
 def send_message(chat_id, text):
@@ -51,29 +42,29 @@ def send_message(chat_id, text):
     requests.post(url, json=payload)
 
 
-# ======================
+# =========================
 # AI BACKEND CALL
-# ======================
+# =========================
 
 def ask_ai(text):
     try:
-        response = requests.post(
+        r = requests.post(
             FLASK_CHAT_URL,
             json={"message": text},
             timeout=60
         )
 
-        data = response.json()
-        return data.get("reply", "No reply from AI")
+        data = r.json()
+        return data.get("reply", "No reply")
 
     except Exception as e:
         print("AI ERROR:", e)
         return "AI backend error"
 
 
-# ======================
+# =========================
 # MAIN LOOP
-# ======================
+# =========================
 
 print("Telegram bot running...")
 
@@ -87,30 +78,25 @@ while True:
 
             last_update_id = update["update_id"]
 
-            if "message" in update and "text" in update["message"]:
+            if "message" not in update:
+                continue
 
-                chat_id = update["message"]["chat"]["id"]
-                text = update["message"]["text"]
+            if "text" not in update["message"]:
+                continue
 
-                print("Received:", text)
+            chat_id = update["message"]["chat"]["id"]
+            text = update["message"]["text"]
 
-                # -------------------
-                # START COMMAND
-                # -------------------
+            print("Received:", text)
 
-                if text == "/start":
-                    send_message(
-                        chat_id,
-                        "Hello 👋 I am Vinka AI Assistant.\nHow can I help you today?"
-                    )
-                    continue
+            # START COMMAND
+            if text.lower() == "/start":
+                send_message(chat_id, "Hello 👋 I am Vinka AI Assistant. How can I help you today?")
+                continue
 
-                # -------------------
-                # AI RESPONSE
-                # -------------------
+            # NORMAL MESSAGE → AI
+            reply = ask_ai(text)
 
-                reply = ask_ai(text)
-
-                send_message(chat_id, reply)
+            send_message(chat_id, reply)
 
     time.sleep(2)
