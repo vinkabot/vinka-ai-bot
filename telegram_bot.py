@@ -107,23 +107,35 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = str(update.effective_user.id)
-        user_text = update.message.text
+        user_text = update.message.text or ""
 
-        memory = load_memory(user_id)
+        memory = load_memory(user_id) or []
 
         messages = [
             {"role": "system", "content": "Ti si prijateljski AI asistent."}
         ]
 
-        messages.extend(memory)
+        for m in memory:
+            if m.get("role") and m.get("content"):
+                messages.append({
+                    "role": m["role"],
+                    "content": m["content"]
+                })
+
         messages.append({"role": "user", "content": user_text})
 
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
-            messages=messages
+            messages=messages,
+            temperature=0.7,
+            timeout=30
         )
 
-        reply = response.choices[0].message.content
+        reply = (
+            response.choices[0].message.content
+            if response.choices
+            else "Hmm... možeš ponoviti?"
+        )
 
         save_memory(user_id, "user", user_text)
         save_memory(user_id, "assistant", reply)
@@ -131,8 +143,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception as e:
-        print("OPENAI ERROR:", e)
-        await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
+        print("OPENAI ERROR:", str(e))
+        await update.message.reply_text(
+            "Ups 😅 AI server je malo spor, probaj opet."
+        )
+
 
 
 # =========================
