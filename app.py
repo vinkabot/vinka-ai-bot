@@ -69,6 +69,17 @@ def init_db():
         );
         """)
 
+                # Vector memory table
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vector_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT,
+            content TEXT,
+            embedding vector(1536),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
 
 init_db()
 
