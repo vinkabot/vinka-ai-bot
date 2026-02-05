@@ -1,37 +1,41 @@
+import os
 from telegram import Update
-from telegram.ext import CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ContextTypes
+from openai import OpenAI
 
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ===== COMMANDS =====
+# ---------------- COMMANDS ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bok! Ja sam Vinka AI 🤖\n"
-        "Možeš pričati sa mnom normalno."
+        "Bok! Ja sam Vinka AI 🤖\nMožeš pričati sa mnom normalno."
     )
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Pošalji mi bilo koju poruku 🙂")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Memory resetirana.")
+    await update.message.reply_text("Resetirano!")
 
-
-# ===== CHAT =====
+# ---------------- AI CHAT ----------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
 
     try:
-        # ZA SADA samo echo test (100% stabilno)
-        await update.message.reply_text(f"Rekla si: {user_text}")
+        user_text = update.message.text or ""
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": "Ti si friendly AI koji govori hrvatski."},
+                {"role": "user", "content": user_text}
+            ]
+        )
+
+        reply = response.choices[0].message.content
+        await update.message.reply_text(reply)
 
     except Exception as e:
-        print("Message error:", e)
+        print("OPENAI ERROR:", e)
         await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
-
-
-# ===== REGISTER =====
-
-def register_handlers(app):
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
