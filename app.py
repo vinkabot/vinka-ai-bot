@@ -46,13 +46,6 @@ db_conn = psycopg2.connect(
 def init_db():
     with db_conn.cursor() as cur:
 
-        # Try enable pgvector (optional)
-        try:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            print("pgvector enabled")
-        except Exception as e:
-            print("pgvector not available:", e)
-
         # Normal memory table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
@@ -64,21 +57,19 @@ def init_db():
         );
         """)
 
-        # Vector table (optional)
-        try:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS vector_memory (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT,
-                content TEXT,
-                embedding vector(1536),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """)
-        except Exception as e:
-            print("Vector table skipped:", e)
+        # Vector table (bez vector tipa zasad)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vector_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT,
+            content TEXT,
+            embedding TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
 
     db_conn.commit()
+
 
 init_db()
 
