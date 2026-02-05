@@ -1,32 +1,44 @@
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from pathlib import Path
 import os
 import json
 from datetime import datetime
 
 from openai import OpenAI
 
-# Telegram
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from telegram_bot import start, help_command, reset, handle_message
-
-
-# --------------------------------------------------
-# Setup
-# --------------------------------------------------
-
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env", override=True)
-
-app = Flask(__name__)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
+
+# --------------------------------------------------
+# ENV
+# --------------------------------------------------
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not found")
+
+
+# --------------------------------------------------
+# APP + CLIENTS
+# --------------------------------------------------
+
+app = Flask(__name__)
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# --------------------------------------------------
+# DB CONNECTION
+# --------------------------------------------------
 
 db_conn = psycopg2.connect(
     DATABASE_URL,
@@ -34,6 +46,11 @@ db_conn = psycopg2.connect(
 )
 
 db_conn.autocommit = True
+
+
+# --------------------------------------------------
+# DB INIT
+# --------------------------------------------------
 
 def init_db():
     with db_conn.cursor() as cur:
@@ -51,7 +68,14 @@ init_db()
 
 
 # --------------------------------------------------
-# Health check
+# TELEGRAM APP (GLOBAL)
+# --------------------------------------------------
+
+telegram_app = None
+
+
+# --------------------------------------------------
+# HEALTH CHECK
 # --------------------------------------------------
 
 @app.route("/")
@@ -60,19 +84,99 @@ def health():
 
 
 # --------------------------------------------------
-# Telegram Webhook
+# TELEGRAM COMMAND HANDLERS
 # --------------------------------------------------
 
-telegram_app = None
+async def start(update, context):
+    await update.message.reply_text("👋 Hello! I'm Vinka AI.")
+
+async def help_command(update, context):
+    await update.message.reply_text("Send me a message and I'll reply.")
+
+async def reset(update, context):
+    user_id = str(update.effective_user.id)
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_memory WHERE user_id = %s",
+            (user_id,)
+        )
+
+    await update.message.reply_text("Memory reset.")
+
+
+async def handle_message(update, context):
+    user_id = str(update.effective_user.id)
+    message = update.message.text
+
+
+    # ---------------- DB LOAD MEMORY ----------------
+
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        SELECT role, content
+        FROM user_memory
+        WHERE user_id = %s
+        ORDER BY created_at ASC
+        LIMIT 12
+        """, (user_id,))
+
+        history = cur.fetchall()
+
+
+    messages = [
+        {"role": "system", "content": "You are Vinka AI Assistant."}
+    ]
+
+    for row in history:
+        messages.append({
+            "role": row["role"],
+            "content": row["content"]
+        })
+
+    messages.append({
+        "role": "user",
+        "content": message
+    })
+
+
+    # ---------------- OPENAI ----------------
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
+    )
+
+    reply = response.choices[0].message.content
+
+
+    # ---------------- SAVE TO DB ----------------
+
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        INSERT INTO user_memory (user_id, role, content)
+        VALUES (%s, %s, %s)
+        """, (user_id, "user", message))
+
+        cur.execute("""
+        INSERT INTO user_memory (user_id, role, content)
+        VALUES (%s, %s, %s)
+        """, (user_id, "assistant", reply))
+
+
+    await update.message.reply_text(reply)
+
+
+# --------------------------------------------------
+# WEBHOOK ROUTE
+# --------------------------------------------------
 
 @app.route("/telegram-webhook", methods=["POST"])
 async def telegram_webhook():
     global telegram_app
 
     if telegram_app is None:
-        telegram_app = Application.builder().token(
-            os.getenv("TELEGRAM_BOT_TOKEN")
-        ).build()
+        telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("help", help_command))
@@ -83,132 +187,18 @@ async def telegram_webhook():
 
         await telegram_app.initialize()
 
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    update = Update.de_json(
+        request.get_json(force=True),
+        telegram_app.bot
+    )
+
     await telegram_app.process_update(update)
 
     return "ok"
 
 
 # --------------------------------------------------
-# Files
-# --------------------------------------------------
-
-MEMORY_FILE = BASE_DIR / "memory_store.json"
-LOG_FILE = BASE_DIR / "chat_logs.txt"
-
-
-# --------------------------------------------------
-# System prompt
-# --------------------------------------------------
-
-SYSTEM_PROMPT = (
-    "You are Vinka AI Assistant. "
-    "You remember conversation context for each user. "
-    "Be friendly and helpful."
-)
-
-MAX_HISTORY = 12
-
-
-# --------------------------------------------------
-# Load memory
-# --------------------------------------------------
-
-if MEMORY_FILE.exists():
-    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-        try:
-            user_memories = json.load(f)
-        except:
-            user_memories = {}
-else:
-    user_memories = {}
-
-
-# --------------------------------------------------
-# Save memory
-# --------------------------------------------------
-
-def save_memory():
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(user_memories, f, ensure_ascii=False, indent=2)
-
-
-# --------------------------------------------------
-# Memory helpers
-# --------------------------------------------------
-
-def get_user_memory(user_id):
-    if user_id not in user_memories:
-        user_memories[user_id] = [
-            {"role": "system", "content": SYSTEM_PROMPT}
-        ]
-        save_memory()
-
-    return user_memories[user_id]
-
-
-def reset_user_memory(user_id):
-    user_memories[user_id] = [
-        {"role": "system", "content": SYSTEM_PROMPT}
-    ]
-    save_memory()
-
-
-# --------------------------------------------------
-# Logging
-# --------------------------------------------------
-
-def log_message(user_id, role, content):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] USER:{user_id} [{role.upper()}]: {content}\n")
-
-
-# --------------------------------------------------
-# Chat API endpoint
-# --------------------------------------------------
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    data = request.get_json()
-
-    user_id = str(data.get("user_id", "default"))
-    message = data.get("message", "").strip()
-
-    if not message:
-        return jsonify({"reply": "No message provided"}), 400
-
-    memory = get_user_memory(user_id)
-
-    log_message(user_id, "user", message)
-    memory.append({"role": "user", "content": message})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=memory
-        )
-
-        reply = response.choices[0].message.content
-
-        log_message(user_id, "assistant", reply)
-        memory.append({"role": "assistant", "content": reply})
-
-        if len(memory) > MAX_HISTORY:
-            memory[:] = [memory[0]] + memory[-(MAX_HISTORY - 1):]
-
-        save_memory()
-
-        return jsonify({"reply": reply})
-
-    except Exception as e:
-        print(e)
-        return jsonify({"reply": "Error"}), 500
-
-
-# --------------------------------------------------
-# Local run (not used by Railway)
+# LOCAL RUN (NOT USED IN RAILWAY)
 # --------------------------------------------------
 
 if __name__ == "__main__":
