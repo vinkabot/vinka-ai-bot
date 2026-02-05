@@ -22,10 +22,13 @@ if not DATABASE_URL:
 
 
 def get_conn():
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         DATABASE_URL,
         cursor_factory=RealDictCursor
     )
+    conn.autocommit = True
+    return conn
+
 
 
 # ---------------- INIT DB ----------------
@@ -51,33 +54,44 @@ init_db()
 # ---------------- MEMORY ----------------
 
 def save_memory(user_id, text):
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO user_memory (user_id, content) VALUES (%s, %s)",
-            (user_id, text),
-        )
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_memory (user_id, content) VALUES (%s, %s)",
+                (user_id, text),
+            )
+        conn.close()
+
+    except Exception as e:
+        print("SAVE MEMORY ERROR:", e)
+        raise e
+
 
 
 def load_memory(user_id):
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT content
-            FROM user_memory
-            WHERE user_id=%s
-            ORDER BY id DESC
-            LIMIT 5
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
-    conn.close()
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT content
+                FROM user_memory
+                WHERE user_id=%s
+                ORDER BY id DESC
+                LIMIT 5
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        conn.close()
 
-    return [r["content"] for r in rows]
+        return [r["content"] for r in rows]
+
+    except Exception as e:
+        print("LOAD MEMORY ERROR:", e)
+        return []
+
 
 
 def clear_memory(user_id):
