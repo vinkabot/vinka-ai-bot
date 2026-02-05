@@ -5,10 +5,6 @@
       "content": "You are Vinka AI Assistant. You remember conversation context for each user. Be friendly and helpful."
     },
     {
-      "role": "user",
-      "content": "moje ime je ana"
-    },
-    {
       "role": "assistant",
       "content": "Zdravo, Ana! Drago mi je da te upoznam. Kako mogu da ti pomognem danas?"
     },
@@ -19,6 +15,38 @@
     {
       "role": "assistant",
       "content": "Ti se zoveš Ana! Ako imaš još pitanja ili ti treba pomoć, slobodno reci."
+    },
+    {
+      "role": "user",
+      "content": "hello"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello, Ana! How can I assist you today?"
+    },
+    {
+      "role": "user",
+      "content": "bok"
+    },
+    {
+      "role": "assistant",
+      "content": "Bok, Ana! Kako si? Kako mogu pomoći?"
+    },
+    {
+      "role": "user",
+      "content": "super sam kako si ti"
+    },
+    {
+      "role": "assistant",
+      "content": "Drago mi je da si super! Ja sam ovde da ti pomognem. Imaš li nešto posebno na umu ili želiš da razgovaraš o nečemu?"
+    },
+    {
+      "role": "user",
+      "content": "što je to crna rupa"
+    },
+    {
+      "role": "assistant",
+      "content": "Crna rupa je oblast u svemiru sa toliko jakom gravitacijom da ništa, pa ni svetlost, ne može da pobegne iz nje. One nastaju kada masivne zvezde umru i kolabiraju pod svojom težinom. \n\nTu su i različite vrste crnih rupa, uključujući:\n\n1. **Stelarne crne rupe** – formiraju se u procesu životnog ciklusa zvezda kada dođe do njihove ekspanzije i kolapsa.\n2. **Supermasivne crne rupe** – nalaze se u centrima većine galaksija, uključujući našu galaksiju Mlečni put, i imaju masu miliona ili čak milijardi sunca.\n3. **Mikroskopske crne rupe** – teoretski bi mogle nastati tokom ranih trenutaka Big Banga ili kroz procese u velikim sudarima čestica.\n\nCrne rupe su fascinantne i složene, a naučnici još uvek proučavaju mnoge aspekte njihovog postojanja. Ako te zanima nešto specifično o njima, slobodno pitaj!"
     }
   ]
 }

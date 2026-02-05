@@ -23,6 +23,32 @@ load_dotenv(BASE_DIR / ".env", override=True)
 app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+db_conn = psycopg2.connect(
+    DATABASE_URL,
+    cursor_factory=RealDictCursor
+)
+
+db_conn.autocommit = True
+
+def init_db():
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+init_db()
+
 
 # --------------------------------------------------
 # Health check
