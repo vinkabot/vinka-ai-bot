@@ -13,9 +13,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
 app = Flask(__name__)
+
 @app.route("/")
 def health():
     return "Bot alive"
+
+from telegram import Update
+from telegram.ext import Application
+
+telegram_app = None
+
+@app.route("/telegram-webhook", methods=["POST"])
+async def telegram_webhook():
+    global telegram_app
+    
+    if telegram_app is None:
+        telegram_app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    await telegram_app.process_update(update)
+
+    return "ok"
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
