@@ -1,178 +1,129 @@
 import os
+from telegram import Update
+from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
+
+from openai import OpenAI
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from telegram import Update
-from telegram.ext import ContextTypes
-
-from openai import OpenAI
-
-
-# ---------------- OPENAI ----------------
+# --------------------
+# CLIENT
+# --------------------
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
-# ---------------- DATABASE ----------------
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL missing")
+# --------------------
+# DB HELPERS
+# --------------------
 
-
-def get_conn():
-    conn = psycopg2.connect(
+def get_db():
+    return psycopg2.connect(
         DATABASE_URL,
         cursor_factory=RealDictCursor
     )
-    conn.autocommit = True
-    return conn
 
-
-
-# ---------------- INIT DB ----------------
-
-def init_db():
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS user_memory (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-# ---------------- MEMORY ----------------
-
-def save_memory(user_id, text):
+def save_memory(user_id, role, content):
     try:
-        conn = get_conn()
+        conn = get_db()
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO user_memory (user_id, content) VALUES (%s, %s)",
-                (user_id, text),
-            )
+            cur.execute("""
+                INSERT INTO user_memory (user_id, role, content)
+                VALUES (%s, %s, %s)
+            """, (user_id, role, content))
+        conn.commit()
         conn.close()
-
     except Exception as e:
         print("SAVE MEMORY ERROR:", e)
-        raise e
-
-
 
 def load_memory(user_id):
     try:
-        conn = get_conn()
+        conn = get_db()
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT content
+            cur.execute("""
+                SELECT role, content
                 FROM user_memory
                 WHERE user_id=%s
                 ORDER BY id DESC
-                LIMIT 5
-                """,
-                (user_id,),
-            )
+                LIMIT 10
+            """, (user_id,))
             rows = cur.fetchall()
-        conn.close()
 
-        return [r["content"] for r in rows]
+        conn.close()
+        rows.reverse()
+        return rows
 
     except Exception as e:
         print("LOAD MEMORY ERROR:", e)
         return []
 
-
-
-def clear_memory(user_id):
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_memory WHERE user_id=%s",
-            (user_id,),
-        )
-    conn.commit()
-    conn.close()
-
-
-# ---------------- AI ----------------
-
-def ask_ai(user_id, user_text):
-
-    memories = load_memory(user_id)
-
-    memory_context = "\n".join(memories) if memories else "No memory yet."
-
-    prompt = f"""
-User memory:
-{memory_context}
-
-User message:
-{user_text}
-
-Answer naturally.
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return response.choices[0].message.content
-
-
-# ---------------- TELEGRAM ----------------
+# --------------------
+# COMMANDS
+# --------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bok! Ja sam Vinka AI 🤖\n"
-        "Možeš pričati sa mnom normalno.\n"
-        "Mogu zapamtiti stvari o tebi 💾"
+        "Bok! Ja sam Vinka AI 🤖\nMogu zapamtiti stvari o tebi 💾"
     )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Piši normalno.\n"
-        "Primjer:\n"
-        "👉 zapamti da volim crnu boju\n"
-        "👉 što volim"
-    )
-
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    clear_memory(user_id)
-    await update.message.reply_text("Memory resetiran 🧹")
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM user_memory WHERE user_id=%s",
+                (str(update.effective_user.id),)
+            )
+        conn.commit()
+        conn.close()
 
+        await update.message.reply_text("Memorija resetirana ✅")
 
-# ---------------- MESSAGE ----------------
+    except Exception as e:
+        print(e)
+        await update.message.reply_text("Reset error")
+
+# --------------------
+# CHAT
+# --------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     try:
         user_id = str(update.effective_user.id)
-        text = update.message.text.lower()
+        text = update.message.text
 
-        # SAVE MEMORY
-        if "zapamti" in text:
-            memory_text = text.replace("zapamti", "").strip()
-            save_memory(user_id, memory_text)
+        history = load_memory(user_id)
 
-            await update.message.reply_text("Zapamtila sam! 💾")
-            return
+        messages = [
+            {"role": "system", "content": "You are friendly assistant."}
+        ]
 
-        # ASK AI
-        reply = ask_ai(user_id, text)
+        messages += history
+        messages.append({"role": "user", "content": text})
 
-        await update.message
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages
+        )
+
+        reply = response.choices[0].message.content
+
+        save_memory(user_id, "user", text)
+        save_memory(user_id, "assistant", reply)
+
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        print("CHAT ERROR:", e)
+        await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
+
+# --------------------
+# REGISTER
+# --------------------
+
+def register_handlers(app):
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
