@@ -1,75 +1,45 @@
-import os
-import requests
-from dotenv import load_dotenv
-from pathlib import Path
+from app import chat_with_ai
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    CommandHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import ContextTypes
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env", override=True)
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-API_URL = "http://127.0.0.1:5000/chat"
-RESET_URL = "http://127.0.0.1:5000/reset"
-
-# --------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Bok! Ja sam Vinka AI.\n"
-        "Pamtim razgovor za svakog korisnika posebno.\n\n"
-        "Komande:\n/reset\n/help"
+        "Bok! Ja sam Vinka AI 🤖\n"
+        "Možeš pričati sa mnom normalno.\n"
+        "Mogu zapamtiti stvari o tebi 💾"
     )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/start – start\n/reset – reset memory\n/help – help"
+        "Samo mi napiši poruku 😊"
     )
+
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
+    context.user_data.clear()
 
-    requests.post(
-        RESET_URL,
-        json={"user_id": user_id}
+    await update.message.reply_text(
+        "Resetirao sam razgovor 😊"
     )
 
-    await update.message.reply_text("🔄 Memory resetiran!")
 
-# --------------------------------------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
     user_id = str(update.effective_user.id)
     text = update.message.text
 
-    response = requests.post(
-        API_URL,
-        json={
-            "user_id": user_id,
-            "message": text
-        },
-        timeout=30
-    )
+    try:
+        reply = chat_with_ai(user_id, text)
+        await update.message.reply_text(reply)
 
-    reply = response.json().get("reply", "No response")
-    await update.message.reply_text(reply)
+    except Exception as e:
+        print("Telegram error:", e)
 
-# --------------------------------------------------
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("🤖 Bot running with per-user memory...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        await update.message.reply_text(
+            "Ups 😅 nešto je pošlo po zlu."
+        )
