@@ -1,8 +1,6 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from dotenv import load_dotenv
 import os
-import json
-from datetime import datetime
 
 from openai import OpenAI
 
@@ -69,7 +67,7 @@ def init_db():
         );
         """)
 
-                # Vector memory table
+        # Vector memory table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS vector_memory (
             id SERIAL PRIMARY KEY,
@@ -80,12 +78,23 @@ def init_db():
         );
         """)
 
-
 init_db()
 
 
 # --------------------------------------------------
-# TELEGRAM APP (GLOBAL)
+# EMBEDDINGS
+# --------------------------------------------------
+
+def get_embedding(text):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+
+# --------------------------------------------------
+# TELEGRAM GLOBAL
 # --------------------------------------------------
 
 telegram_app = None
@@ -101,25 +110,11 @@ def health():
 
 
 # --------------------------------------------------
-# TELEGRAM COMMAND HANDLERS
+# TELEGRAM HANDLERS
 # --------------------------------------------------
 
 async def start(update, context):
-    await update.message.reply_text("👋 Hello! I'm Vinka AI.")
-
-async def help_command(update, context):
-    await update.message.reply_text("Send me a message and I'll reply.")
-
-async def reset(update, context):
-    user_id = str(update.effective_user.id)
-
-    with db_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_memory WHERE user_id = %s",
-            (user_id,)
-        )
-
-    await update.message.reply_text("Memory reset.")
+    await update.message.reply_text("Hello! I'm Vinka AI.")
 
 
 async def handle_message(update, context):
@@ -127,7 +122,7 @@ async def handle_message(update, context):
     message = update.message.text
 
 
-    # ---------------- DB LOAD MEMORY ----------------
+    # ---------------- NORMAL MEMORY LOAD ----------------
 
     with db_conn.cursor() as cur:
         cur.execute("""
@@ -141,9 +136,7 @@ async def handle_message(update, context):
         history = cur.fetchall()
 
 
-    messages = [
-        {"role": "system", "content": "You are Vinka AI Assistant."}
-    ]
+    messages = [{"role": "system", "content": "You are Vinka AI assistant."}]
 
     for row in history:
         messages.append({
@@ -151,13 +144,10 @@ async def handle_message(update, context):
             "content": row["content"]
         })
 
-    messages.append({
-        "role": "user",
-        "content": message
-    })
+    messages.append({"role": "user", "content": message})
 
 
-    # ---------------- OPENAI ----------------
+    # ---------------- OPENAI CHAT ----------------
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -167,9 +157,10 @@ async def handle_message(update, context):
     reply = response.choices[0].message.content
 
 
-    # ---------------- SAVE TO DB ----------------
+    # ---------------- SAVE NORMAL MEMORY ----------------
 
     with db_conn.cursor() as cur:
+
         cur.execute("""
         INSERT INTO user_memory (user_id, role, content)
         VALUES (%s, %s, %s)
@@ -181,11 +172,21 @@ async def handle_message(update, context):
         """, (user_id, "assistant", reply))
 
 
+        # ---------------- VECTOR MEMORY SAVE ----------------
+
+        embedding = get_embedding(message)
+
+        cur.execute("""
+        INSERT INTO vector_memory (user_id, content, embedding)
+        VALUES (%s, %s, %s)
+        """, (user_id, message, embedding))
+
+
     await update.message.reply_text(reply)
 
 
 # --------------------------------------------------
-# WEBHOOK ROUTE
+# WEBHOOK
 # --------------------------------------------------
 
 @app.route("/telegram-webhook", methods=["POST"])
@@ -196,18 +197,13 @@ async def telegram_webhook():
         telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
         telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("help", help_command))
-        telegram_app.add_handler(CommandHandler("reset", reset))
         telegram_app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
         )
 
         await telegram_app.initialize()
 
-    update = Update.de_json(
-        request.get_json(force=True),
-        telegram_app.bot
-    )
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
 
     await telegram_app.process_update(update)
 
@@ -215,7 +211,7 @@ async def telegram_webhook():
 
 
 # --------------------------------------------------
-# LOCAL RUN (NOT USED IN RAILWAY)
+# LOCAL RUN
 # --------------------------------------------------
 
 if __name__ == "__main__":
