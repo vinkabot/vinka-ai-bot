@@ -1,18 +1,23 @@
-import os
 from flask import Flask, request
-
+import os
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application
 
-from telegram_bot import start, help_command, reset, handle_message
+from telegram_bot import setup_handlers
+
+load_dotenv()
 
 app = Flask(__name__)
 
+# ---------- TELEGRAM GLOBAL ----------
 telegram_app = None
+
 
 @app.route("/")
 def health():
     return "Bot alive"
+
 
 @app.route("/telegram-webhook", methods=["POST"])
 async def telegram_webhook():
@@ -23,14 +28,13 @@ async def telegram_webhook():
             os.getenv("TELEGRAM_BOT_TOKEN")
         ).build()
 
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("help", help_command))
-        telegram_app.add_handler(CommandHandler("reset", reset))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        setup_handlers(telegram_app)
 
         await telegram_app.initialize()
 
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    data = request.get_json(force=True)
+    update = Update.de_json(data, telegram_app.bot)
+
     await telegram_app.process_update(update)
 
     return "ok"
