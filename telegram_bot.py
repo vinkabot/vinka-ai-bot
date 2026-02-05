@@ -1,140 +1,140 @@
-from telegram import Update
-from telegram.ext import ContextTypes
-from openai import OpenAI
 import os
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from telegram import Update
+from telegram.ext import ContextTypes
+
+from openai import OpenAI
+
+
+# ---------------- OPENAI ----------------
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-db_conn = psycopg2.connect(
-    os.getenv("DATABASE_URL"),
-    cursor_factory=RealDictCursor
-)
+
+# ---------------- DATABASE ----------------
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL missing")
+
+
+db_conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 db_conn.autocommit = True
+
+
+def init_db():
+    with db_conn.cursor() as cur:
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+
+init_db()
 
 
 # ---------------- MEMORY ----------------
 
-def save_message(user_id, role, content):
+def save_memory(user_id, text):
     with db_conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO user_memory (user_id, role, content) VALUES (%s,%s,%s)",
-            (user_id, role, content)
+            "INSERT INTO user_memory (user_id, content) VALUES (%s, %s)",
+            (user_id, text),
         )
 
 
-def get_memory(user_id):
-    with db_conn.cursor() as cur:
-        cur.execute("""
-            SELECT role, content
-            FROM user_memory
-            WHERE user_id=%s
-            ORDER BY id DESC
-            LIMIT 10
-        """, (user_id,))
-        return cur.fetchall()
-
-
-def save_fact(user_id, fact):
+def load_memory(user_id):
     with db_conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO user_facts (user_id, fact) VALUES (%s,%s)",
-            (user_id, fact)
+            "SELECT content FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT 5",
+            (user_id,),
         )
+        rows = cur.fetchall()
+        return [r["content"] for r in rows]
 
 
-def get_facts(user_id):
+def clear_memory(user_id):
     with db_conn.cursor() as cur:
-        cur.execute("""
-            SELECT fact FROM user_facts
-            WHERE user_id=%s
-            ORDER BY id DESC
-            LIMIT 10
-        """, (user_id,))
-        return [r["fact"] for r in cur.fetchall()]
-
-
-def detect_fact(text):
-    t = text.lower()
-    if "volim" in t:
-        return text
-    return None
+        cur.execute("DELETE FROM user_memory WHERE user_id=%s", (user_id,))
 
 
 # ---------------- AI ----------------
 
-def chat_with_ai(user_id, text):
+def ask_ai(user_id, user_text):
 
-    save_message(user_id, "user", text)
+    memories = load_memory(user_id)
+    memory_context = "\n".join(memories) if memories else "No memory yet."
 
-    fact = detect_fact(text)
-    if fact:
-        save_fact(user_id, fact)
+    prompt = f"""
+User memory:
+{memory_context}
 
-    memory = get_memory(user_id)
-    facts = get_facts(user_id)
+User message:
+{user_text}
 
-    messages = []
-
-    if facts:
-        messages.append({
-            "role": "system",
-            "content": "User facts: " + "; ".join(facts)
-        })
-
-    for m in reversed(memory):
-        messages.append({
-            "role": m["role"],
-            "content": m["content"]
-        })
+Answer naturally.
+"""
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        messages=messages
+        messages=[{"role": "user", "content": prompt}],
     )
 
-    reply = response.choices[0].message.content
-
-    save_message(user_id, "assistant", reply)
-
-    return reply
+    return response.choices[0].message.content
 
 
-# ---------------- COMMANDS ----------------
+# ---------------- TELEGRAM COMMANDS ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bok! Ja sam Vinka AI 🤖\n"
+        "Možeš pričati sa mnom normalno.\n"
         "Mogu zapamtiti stvari o tebi 💾"
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Samo piši 😊")
+    await update.message.reply_text(
+        "Piši normalno.\n"
+        "Primjer:\n"
+        "👉 zapamti da volim crnu boju\n"
+        "👉 što volim"
+    )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Resetirao sam razgovor 😊")
+    user_id = str(update.effective_user.id)
+    clear_memory(user_id)
+    await update.message.reply_text("Memory resetiran 🧹")
 
+
+# ---------------- MESSAGE HANDLER ----------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not update.message:
-        return
-
-    user_id = str(update.effective_user.id)
-    text = update.message.text
-
     try:
-        reply = chat_with_ai(user_id, text)
+        user_id = str(update.effective_user.id)
+        text = update.message.text.lower()
+
+        # SAVE MEMORY
+        if "zapamti" in text:
+            save_memory(user_id, text.replace("zapamti", "").strip())
+            await update.message.reply_text("Zapamtila sam! 💾")
+            return
+
+        # ASK AI
+        reply = ask_ai(user_id, text)
+
         await update.message.reply_text(reply)
 
     except Exception as e:
-        print("TELEGRAM ERROR:", e)
-
-        await update.message.reply_text(
-            "Ups 😅 nešto je pošlo po zlu."
-        )
+        print("ERROR:", e)
+        await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")

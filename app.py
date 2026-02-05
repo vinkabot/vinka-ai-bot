@@ -5,7 +5,6 @@ import os
 from telegram import Update
 from telegram.ext import Application
 
-# Importamo SAMO handlere
 from telegram_bot import start, help_command, reset, handle_message
 
 
@@ -21,7 +20,7 @@ def health():
     return "Bot alive 🚀"
 
 
-# ---------------- TELEGRAM APP ----------------
+# ---------------- TELEGRAM ----------------
 
 telegram_app = None
 
@@ -30,13 +29,13 @@ telegram_app = None
 async def telegram_webhook():
     global telegram_app
 
-    # Ako app nije inicijaliziran -> napravi ga
     if telegram_app is None:
-        telegram_app = Application.builder()\
-            .token(os.getenv("TELEGRAM_BOT_TOKEN"))\
+        telegram_app = (
+            Application.builder()
+            .token(os.getenv("TELEGRAM_BOT_TOKEN"))
             .build()
+        )
 
-        # Dodaj handlere
         from telegram.ext import CommandHandler, MessageHandler, filters
 
         telegram_app.add_handler(CommandHandler("start", start))
@@ -48,7 +47,6 @@ async def telegram_webhook():
 
         await telegram_app.initialize()
 
-    # Process update
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
     await telegram_app.process_update(update)
 
