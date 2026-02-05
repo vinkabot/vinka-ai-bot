@@ -1,102 +1,75 @@
-import requests
-import time
 import os
+import requests
+from dotenv import load_dotenv
+from pathlib import Path
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    CommandHandler,
+    ContextTypes,
+    filters,
+)
 
-# =========================
-# ENV VARIABLES
-# =========================
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-FLASK_CHAT_URL = "http://127.0.0.1:5000/chat"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+API_URL = "http://127.0.0.1:5000/chat"
+RESET_URL = "http://127.0.0.1:5000/reset"
 
-last_update_id = None
+# --------------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Bok! Ja sam Vinka AI.\n"
+        "Pamtim razgovor za svakog korisnika posebno.\n\n"
+        "Komande:\n/reset\n/help"
+    )
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/start – start\n/reset – reset memory\n/help – help"
+    )
 
-# =========================
-# TELEGRAM FUNCTIONS
-# =========================
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
 
-def get_updates():
-    global last_update_id
+    requests.post(
+        RESET_URL,
+        json={"user_id": user_id}
+    )
 
-    url = f"{TELEGRAM_API}/getUpdates"
-    params = {"timeout": 30}
+    await update.message.reply_text("🔄 Memory resetiran!")
 
-    if last_update_id:
-        params["offset"] = last_update_id + 1
+# --------------------------------------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    text = update.message.text
 
-    r = requests.get(url, params=params, timeout=30)
-    return r.json()
+    response = requests.post(
+        API_URL,
+        json={
+            "user_id": user_id,
+            "message": text
+        },
+        timeout=30
+    )
 
+    reply = response.json().get("reply", "No response")
+    await update.message.reply_text(reply)
 
-def send_message(chat_id, text):
-    url = f"{TELEGRAM_API}/sendMessage"
+# --------------------------------------------------
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    requests.post(url, json=payload)
+    print("🤖 Bot running with per-user memory...")
+    app.run_polling()
 
-
-# =========================
-# AI BACKEND CALL
-# =========================
-
-def ask_ai(text):
-    try:
-        r = requests.post(
-            FLASK_CHAT_URL,
-            json={"message": text},
-            timeout=60
-        )
-
-        data = r.json()
-        return data.get("reply", "No reply")
-
-    except Exception as e:
-        print("AI ERROR:", e)
-        return "AI backend error"
-
-
-# =========================
-# MAIN LOOP
-# =========================
-
-print("Telegram bot running...")
-
-while True:
-
-    updates = get_updates()
-
-    if "result" in updates:
-
-        for update in updates["result"]:
-
-            last_update_id = update["update_id"]
-
-            if "message" not in update:
-                continue
-
-            if "text" not in update["message"]:
-                continue
-
-            chat_id = update["message"]["chat"]["id"]
-            text = update["message"]["text"]
-
-            print("Received:", text)
-
-            # START COMMAND
-            if text.lower() == "/start":
-                send_message(chat_id, "Hello 👋 I am Vinka AI Assistant. How can I help you today?")
-                continue
-
-            # NORMAL MESSAGE → AI
-            reply = ask_ai(text)
-
-            send_message(chat_id, reply)
-
-    time.sleep(2)
+if __name__ == "__main__":
+    main()

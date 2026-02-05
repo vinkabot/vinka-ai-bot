@@ -1,76 +1,137 @@
 from flask import Flask, request, jsonify
-from openai import OpenAI
+from dotenv import load_dotenv
+from pathlib import Path
 import os
+import json
+from datetime import datetime
+from openai import OpenAI
 
-# ------------------------
-# CONFIG
-# ------------------------
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+# --------------------------------------------------
+# Setup
+# --------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
 app = Flask(__name__)
+@app.route("/")
+def health():
+    return "Bot alive"
 
-SYSTEM_PROMPT = """
-You are Vinka AI Assistant.
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-You must NEVER say you are ChatGPT or OpenAI model.
+# --------------------------------------------------
+# Files
+# --------------------------------------------------
+MEMORY_FILE = BASE_DIR / "memory_store.json"
+LOG_FILE = BASE_DIR / "chat_logs.txt"
 
-You are a helpful, friendly personal assistant named Vinka.
+SYSTEM_PROMPT = (
+    "You are Vinka AI Assistant. "
+    "You remember conversation context for each user. "
+    "Be friendly and helpful."
+)
 
-Always introduce yourself as: Vinka AI Assistant.
+MAX_HISTORY = 12
 
-Be concise, friendly and helpful.
-"""
+# --------------------------------------------------
+# Load memory
+# --------------------------------------------------
+if MEMORY_FILE.exists():
+    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        try:
+            user_memories = json.load(f)
+        except:
+            user_memories = {}
+else:
+    user_memories = {}
 
+# --------------------------------------------------
+# Save memory
+# --------------------------------------------------
+def save_memory():
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(user_memories, f, ensure_ascii=False, indent=2)
 
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
+def get_user_memory(user_id):
+    if user_id not in user_memories:
+        user_memories[user_id] = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
+        save_memory()
+    return user_memories[user_id]
 
-# ------------------------
-# ROUTE
-# ------------------------
+def reset_user_memory(user_id):
+    user_memories[user_id] = [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
+    save_memory()
 
+def log_message(user_id, role, content):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] USER:{user_id} {role.upper()}: {content}\n")
+
+# --------------------------------------------------
+# Chat
+# --------------------------------------------------
 @app.route("/chat", methods=["POST"])
 def chat():
-
     data = request.get_json()
 
-    if not data or "message" not in data:
-        return jsonify({"reply": "No message received"}), 400
+    user_id = str(data.get("user_id", "default"))
+    message = data.get("message", "").strip()
 
-    user_message = data["message"]
+    if not message:
+        return jsonify({"reply": "No message provided"}), 400
 
-    print("AI REQUEST:", user_message)
+    memory = get_user_memory(user_id)
+
+    log_message(user_id, "user", message)
+    memory.append({"role": "user", "content": message})
 
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ]
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=memory
         )
 
-        ai_reply = response.output_text
+        reply = response.choices[0].message.content
 
-        print("AI REPLY:", ai_reply)
+        log_message(user_id, "assistant", reply)
+        memory.append({"role": "assistant", "content": reply})
 
-        return jsonify({"reply": ai_reply})
+        if len(memory) > MAX_HISTORY:
+            memory[:] = [memory[0]] + memory[-(MAX_HISTORY - 1):]
+
+        save_memory()
+
+        return jsonify({"reply": reply})
 
     except Exception as e:
-        print("OPENAI ERROR:", e)
-        return jsonify({"reply": "AI backend error"}), 500
+        print(e)
+        return jsonify({"reply": "Error"}), 500
+
+# --------------------------------------------------
+# Reset
+# --------------------------------------------------
+@app.route("/reset", methods=["POST"])
+def reset():
+    data = request.get_json()
+    user_id = str(data.get("user_id", "default"))
+
+    reset_user_memory(user_id)
+    return jsonify({"status": "reset"})
 
 
-# ------------------------
-# START SERVER
-# ------------------------
-
+# --------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+

@@ -1,0 +1,24 @@
+{
+  "8230251059": [
+    {
+      "role": "system",
+      "content": "You are Vinka AI Assistant. You remember conversation context for each user. Be friendly and helpful."
+    },
+    {
+      "role": "user",
+      "content": "moje ime je ana"
+    },
+    {
+      "role": "assistant",
+      "content": "Zdravo, Ana! Drago mi je da te upoznam. Kako mogu da ti pomognem danas?"
+    },
+    {
+      "role": "user",
+      "content": "kako se zovem?"
+    },
+    {
+      "role": "assistant",
+      "content": "Ti se zoveš Ana! Ako imaš još pitanja ili ti treba pomoć, slobodno reci."
+    }
+  ]
+}
