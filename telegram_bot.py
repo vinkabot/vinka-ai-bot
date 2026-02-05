@@ -21,13 +21,18 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL missing")
 
 
-db_conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-db_conn.autocommit = True
+def get_conn():
+    return psycopg2.connect(
+        DATABASE_URL,
+        cursor_factory=RealDictCursor
+    )
 
+
+# ---------------- INIT DB ----------------
 
 def init_db():
-    with db_conn.cursor() as cur:
-
+    conn = get_conn()
+    with conn.cursor() as cur:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
@@ -36,6 +41,8 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+    conn.commit()
+    conn.close()
 
 
 init_db()
@@ -44,26 +51,44 @@ init_db()
 # ---------------- MEMORY ----------------
 
 def save_memory(user_id, text):
-    with db_conn.cursor() as cur:
+    conn = get_conn()
+    with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO user_memory (user_id, content) VALUES (%s, %s)",
             (user_id, text),
         )
+    conn.commit()
+    conn.close()
 
 
 def load_memory(user_id):
-    with db_conn.cursor() as cur:
+    conn = get_conn()
+    with conn.cursor() as cur:
         cur.execute(
-            "SELECT content FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT 5",
+            """
+            SELECT content
+            FROM user_memory
+            WHERE user_id=%s
+            ORDER BY id DESC
+            LIMIT 5
+            """,
             (user_id,),
         )
         rows = cur.fetchall()
-        return [r["content"] for r in rows]
+    conn.close()
+
+    return [r["content"] for r in rows]
 
 
 def clear_memory(user_id):
-    with db_conn.cursor() as cur:
-        cur.execute("DELETE FROM user_memory WHERE user_id=%s", (user_id,))
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_memory WHERE user_id=%s",
+            (user_id,),
+        )
+    conn.commit()
+    conn.close()
 
 
 # ---------------- AI ----------------
@@ -71,6 +96,7 @@ def clear_memory(user_id):
 def ask_ai(user_id, user_text):
 
     memories = load_memory(user_id)
+
     memory_context = "\n".join(memories) if memories else "No memory yet."
 
     prompt = f"""
@@ -91,7 +117,7 @@ Answer naturally.
     return response.choices[0].message.content
 
 
-# ---------------- TELEGRAM COMMANDS ----------------
+# ---------------- TELEGRAM ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -116,7 +142,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Memory resetiran 🧹")
 
 
-# ---------------- MESSAGE HANDLER ----------------
+# ---------------- MESSAGE ----------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -126,15 +152,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # SAVE MEMORY
         if "zapamti" in text:
-            save_memory(user_id, text.replace("zapamti", "").strip())
+            memory_text = text.replace("zapamti", "").strip()
+            save_memory(user_id, memory_text)
+
             await update.message.reply_text("Zapamtila sam! 💾")
             return
 
         # ASK AI
         reply = ask_ai(user_id, text)
 
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-        print("ERROR:", e)
-        await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
+        await update.message
