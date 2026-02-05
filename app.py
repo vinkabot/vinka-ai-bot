@@ -54,6 +54,11 @@ db_conn.autocommit = True
 
 def init_db():
     with db_conn.cursor() as cur:
+
+        # Enable vector extension
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
+        # Normal memory table
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
@@ -63,6 +68,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+
 
 init_db()
 
