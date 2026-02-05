@@ -152,16 +152,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ⭐ FALLBACK MEMORY REPLY
         memory = load_memory(user_id) or []
 
-        if "što volim" in user_text.lower():
-            prefs = [
-                m["content"] for m in memory
-                if "volim" in m["content"].lower()
-            ]
-            if prefs:
-                await update.message.reply_text(
-                    f"Rekao si da {prefs[-1]}"
-                )
-                return
+    
+    if "što volim" in user_text.lower():
+
+        prefs = []
+
+        for m in memory:
+            if m.get("role") == "user":
+                content = m.get("content", "").lower()
+
+                if "zapamti" in content and "volim" in content:
+                    prefs.append(m["content"])
+
+        if prefs:
+            last_pref = prefs[-1]
+
+            last_pref = last_pref.replace("zapamti da ", "")
+            last_pref = last_pref.replace("zapamti ", "")
+
+            await update.message.reply_text(
+                f"Rekao si da {last_pref}"
+            )
+            return
+
 
         await update.message.reply_text(
             "Ups 😅 AI server je malo spor, probaj opet."
