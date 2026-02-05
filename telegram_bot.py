@@ -105,10 +105,10 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = str(update.effective_user.id)
-        user_text = update.message.text or ""
+    user_id = str(update.effective_user.id)
+    user_text = update.message.text or ""
 
+    try:
         memory = load_memory(user_id) or []
 
         messages = [
@@ -124,18 +124,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         messages.append({"role": "user", "content": user_text})
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=messages,
-            temperature=0.7,
-            timeout=30
-        )
+        # ⭐ RETRY LOGIC
+        for attempt in range(2):
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=messages,
+                    temperature=0.7,
+                    timeout=60
+                )
+                break
+            except Exception as e:
+                print("OpenAI attempt failed:", e)
+                if attempt == 1:
+                    raise e
 
-        reply = (
-            response.choices[0].message.content
-            if response.choices
-            else "Hmm... možeš ponoviti?"
-        )
+        reply = response.choices[0].message.content
 
         save_memory(user_id, "user", user_text)
         save_memory(user_id, "assistant", reply)
@@ -143,7 +147,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception as e:
-        print("OPENAI ERROR:", str(e))
+        print("FINAL ERROR:", e)
+
+        # ⭐ FALLBACK MEMORY REPLY
+        memory = load_memory(user_id) or []
+
+        if "što volim" in user_text.lower():
+            prefs = [
+                m["content"] for m in memory
+                if "volim" in m["content"].lower()
+            ]
+            if prefs:
+                await update.message.reply_text(
+                    f"Rekao si da {prefs[-1]}"
+                )
+                return
+
         await update.message.reply_text(
             "Ups 😅 AI server je malo spor, probaj opet."
         )
