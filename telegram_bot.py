@@ -8,16 +8,16 @@ from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
 
-
-# --------------------------------------------------
-# OpenAI
-# --------------------------------------------------
+# =========================================================
+# OPENAI
+# =========================================================
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --------------------------------------------------
-# Database
-# --------------------------------------------------
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -29,9 +29,9 @@ db_conn = psycopg2.connect(
 db_conn.autocommit = True
 
 
-# --------------------------------------------------
+# =========================================================
 # DB INIT
-# --------------------------------------------------
+# =========================================================
 
 def init_db():
     with db_conn.cursor() as cur:
@@ -45,22 +45,21 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-    # Add importance column if missing
-    try:
-        cur.execute("""
-            ALTER TABLE user_memory
-            ADD COLUMN IF NOT EXISTS importance FLOAT DEFAULT 1;
-        """)
-    except Exception:
-        pass
 
+        try:
+            cur.execute("""
+                ALTER TABLE user_memory
+                ADD COLUMN IF NOT EXISTS importance INTEGER DEFAULT 1;
+            """)
+        except Exception:
+            pass
 
 init_db()
 
 
-# --------------------------------------------------
+# =========================================================
 # IMPORTANCE DETECTION
-# --------------------------------------------------
+# =========================================================
 
 def detect_importance(text: str) -> int:
     text = text.lower()
@@ -82,9 +81,9 @@ def detect_importance(text: str) -> int:
     return 1
 
 
-# --------------------------------------------------
+# =========================================================
 # MEMORY HELPERS
-# --------------------------------------------------
+# =========================================================
 
 def save_memory(user_id: str, role: str, content: str):
     importance = detect_importance(content)
@@ -116,12 +115,15 @@ def get_memory_context(user_id: str) -> str:
 
 def reset_memory(user_id: str):
     with db_conn.cursor() as cur:
-        cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "DELETE FROM user_memory WHERE user_id = %s",
+            (user_id,)
+        )
 
 
-# --------------------------------------------------
+# =========================================================
 # OPENAI REPLY
-# --------------------------------------------------
+# =========================================================
 
 def ask_openai(user_text: str, memory_context: str) -> str:
     try:
@@ -152,9 +154,9 @@ Memory:
         return "Ups 😅 AI server je malo spor, probaj opet."
 
 
-# --------------------------------------------------
-# HANDLERS
-# --------------------------------------------------
+# =========================================================
+# TELEGRAM HANDLERS
+# =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -188,9 +190,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
 
 
-# --------------------------------------------------
+# =========================================================
 # REGISTER HANDLERS
-# --------------------------------------------------
+# =========================================================
 
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
