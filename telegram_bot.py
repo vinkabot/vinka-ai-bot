@@ -1,22 +1,21 @@
 import os
-from telegram import Update
-from telegram.ext import CommandHandler, MessageHandler, ContextTypes, filters
-
-from openai import OpenAI
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from telegram import Update
+from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
 
-# -------------------------------------------------
+from openai import OpenAI
+
+# --------------------------------------------------
 # OpenAI
-# -------------------------------------------------
+# --------------------------------------------------
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-# -------------------------------------------------
+# --------------------------------------------------
 # Database
-# -------------------------------------------------
+# --------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -25,91 +24,164 @@ db_conn = psycopg2.connect(
     cursor_factory=RealDictCursor
 )
 
+db_conn.autocommit = True
 
-# -------------------------------------------------
-# Commands
-# -------------------------------------------------
+
+# --------------------------------------------------
+# DB INIT
+# --------------------------------------------------
+
+def init_db():
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            importance INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+init_db()
+
+
+# --------------------------------------------------
+# IMPORTANCE DETECTION
+# --------------------------------------------------
+
+def detect_importance(text: str) -> int:
+    text = text.lower()
+
+    if any(x in text for x in [
+        "zovem se",
+        "moje ime je",
+        "ja sam"
+    ]):
+        return 4
+
+    if any(x in text for x in [
+        "volim",
+        "obožavam",
+        "najdraže"
+    ]):
+        return 3
+
+    return 1
+
+
+# --------------------------------------------------
+# MEMORY HELPERS
+# --------------------------------------------------
+
+def save_memory(user_id: str, role: str, content: str):
+    importance = detect_importance(content)
+
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        INSERT INTO user_memory (user_id, role, content, importance)
+        VALUES (%s, %s, %s, %s)
+        """, (user_id, role, content, importance))
+
+
+def get_memory_context(user_id: str) -> str:
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        SELECT content
+        FROM user_memory
+        WHERE user_id = %s
+        ORDER BY importance DESC, created_at DESC
+        LIMIT 5
+        """, (user_id,))
+
+        rows = cur.fetchall()
+
+    if not rows:
+        return ""
+
+    return "\n".join([r["content"] for r in rows])
+
+
+def reset_memory(user_id: str):
+    with db_conn.cursor() as cur:
+        cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
+
+
+# --------------------------------------------------
+# OPENAI REPLY
+# --------------------------------------------------
+
+def ask_openai(user_text: str, memory_context: str) -> str:
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": f"""
+Ti si Vinka AI, pametan Telegram AI asistent.
+Koristi memory ako postoji.
+
+Memory:
+{memory_context}
+"""
+            },
+            {"role": "user", "content": user_text}
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=messages,
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        print("OpenAI error:", e)
+        return "Ups 😅 AI server je malo spor, probaj opet."
+
+
+# --------------------------------------------------
+# HANDLERS
+# --------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bok! Ja sam Vinka AI 🤖\nMožeš pričati sa mnom normalno.\nMogu zapamtiti stvari o tebi 💾"
+        "Bok! Ja sam Vinka AI 🤖\nMogu pamtiti stvari o tebi 🧠"
     )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    with db_conn.cursor() as cur:
-        cur.execute("DELETE FROM user_memory WHERE user_id = %s",
-                    (str(update.effective_user.id),))
-        db_conn.commit()
-
+    user_id = str(update.effective_user.id)
+    reset_memory(user_id)
     await update.message.reply_text("Memory resetiran.")
 
 
-# -------------------------------------------------
-# AI Chat
-# -------------------------------------------------
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user_text = update.message.text
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        user_id = str(update.effective_user.id)
-        text = update.message.text
+        save_memory(user_id, "user", user_text)
 
-        # Save memory
-        with db_conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO user_memory (user_id, role, content)
-                VALUES (%s,%s,%s)
-            """, (user_id, "user", text))
-            db_conn.commit()
+        memory_context = get_memory_context(user_id)
 
-        # Load memory
-        with db_conn.cursor() as cur:
-            cur.execute("""
-                SELECT role, content
-                FROM user_memory
-                WHERE user_id = %s
-                ORDER BY created_at DESC
-                LIMIT 10
-            """, (user_id,))
-            rows = cur.fetchall()
+        reply = ask_openai(user_text, memory_context)
 
-        messages = [
-            {"role": r["role"], "content": r["content"]}
-            for r in reversed(rows)
-        ]
-
-        messages.insert(0, {
-            "role": "system",
-            "content": "You are a friendly AI assistant."
-        })
-
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=messages
-        )
-
-        reply = response.choices[0].message.content
-
-        # Save AI reply
-        with db_conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO user_memory (user_id, role, content)
-                VALUES (%s,%s,%s)
-            """, (user_id, "assistant", reply))
-            db_conn.commit()
+        save_memory(user_id, "assistant", reply)
 
         await update.message.reply_text(reply)
 
     except Exception as e:
-        print("AI ERROR:", e)
+        print("Handler error:", e)
         await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
 
 
-# -------------------------------------------------
-# Register handlers
-# -------------------------------------------------
+# --------------------------------------------------
+# REGISTER HANDLERS
+# --------------------------------------------------
 
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
