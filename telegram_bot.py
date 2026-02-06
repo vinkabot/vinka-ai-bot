@@ -214,27 +214,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     text = update.message.text
 
+    reply = None
+
     try:
-        # Save conversation memory
         save_memory(user_id, "user", text)
 
-        # GOD MODE smart save decision
         decision = await classify_memory_importance(text)
 
         if decision.get("save"):
             save_vector_memory(user_id, text)
 
-        # Load normal memory
         memory = load_memory(user_id)
-
-        # Semantic recall
         semantic_mem = semantic_search(user_id, text)
 
         memory_context = ""
         if semantic_mem:
             memory_context = "User memory:\n" + "\n".join(semantic_mem)
 
-        # OpenAI response
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -256,14 +252,17 @@ Use memory if relevant:
 
         save_memory(user_id, "assistant", reply)
 
-        await update.message.reply_text(reply)
-
     except Exception as e:
         print("ERROR:", e)
 
+    # SEND REPLY OUTSIDE TRY
+    if reply:
+        await update.message.reply_text(reply)
+    else:
         await update.message.reply_text(
             "Ups 😅 AI server je malo spor, probaj opet."
         )
+
 
 
 # -------------------------------------------------
