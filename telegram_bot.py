@@ -12,15 +12,11 @@ from telegram.ext import (
 
 from openai import OpenAI
 
-# =========================
-# OPENAI
-# =========================
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# =========================
+# -------------------------------------------------
 # DATABASE
-# =========================
+# -------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -28,6 +24,7 @@ db_conn = psycopg2.connect(
     DATABASE_URL,
     cursor_factory=RealDictCursor
 )
+
 db_conn.autocommit = True
 
 
@@ -37,9 +34,19 @@ def init_db():
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
+            user_id TEXT,
+            role TEXT,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vector_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT,
+            content TEXT,
+            embedding TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
@@ -47,44 +54,112 @@ def init_db():
 
 init_db()
 
-# =========================
+# -------------------------------------------------
 # MEMORY HELPERS
-# =========================
+# -------------------------------------------------
+
 
 def save_memory(user_id, role, content):
     with db_conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO user_memory (user_id, role, content)
-            VALUES (%s,%s,%s)
-            """,
-            (user_id, role, content)
-        )
+            VALUES (%s, %s, %s)
+        """, (user_id, role, content))
 
 
-def load_memory(user_id, limit=10):
+def load_memory(user_id, limit=12):
     with db_conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             SELECT role, content
             FROM user_memory
-            WHERE user_id=%s
+            WHERE user_id = %s
             ORDER BY id DESC
             LIMIT %s
-            """,
-            (user_id, limit)
-        )
+        """, (user_id, limit))
+
         rows = cur.fetchall()
+        rows.reverse()
+        return rows
 
-    return list(reversed(rows))
 
-# =========================
+# -------------------------------------------------
+# EMBEDDING (SAFE VERSION)
+# -------------------------------------------------
+
+def get_embedding(text):
+    try:
+        r = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        return r.data[0].embedding
+    except:
+        return None
+
+
+# -------------------------------------------------
+# VECTOR MEMORY SAFE (NO CRASH)
+# -------------------------------------------------
+
+def save_vector_memory(user_id, text):
+    emb = get_embedding(text)
+
+    if emb is None:
+        return
+
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO vector_memory (user_id, content, embedding)
+                VALUES (%s, %s, %s)
+            """, (user_id, text, str(emb)))
+    except:
+        pass
+
+
+# -------------------------------------------------
+# SMART MEMORY DECISION
+# -------------------------------------------------
+
+async def should_store_memory(text):
+    try:
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+Decide if this message is important long term memory.
+
+Store:
+- preferences
+- personal facts
+- identity
+- likes/dislikes
+- goals
+
+Return only: yes or no
+"""
+                },
+                {"role": "user", "content": text}
+            ]
+        )
+
+        return "yes" in r.choices[0].message.content.lower()
+
+    except:
+        return False
+
+
+# -------------------------------------------------
 # TELEGRAM COMMANDS
-# =========================
+# -------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Bok! Ja sam Vinka AI 🤖\nMogu zapamtiti stvari o tebi 💾"
+        "Bok! Ja sam Vinka AI 🤖\n"
+        "Možeš pričati sa mnom normalno.\n"
+        "Mogu zapamtiti stvari o tebi 💾"
     )
 
 
@@ -92,105 +167,60 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     with db_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_memory WHERE user_id=%s",
-            (user_id,)
-        )
+        cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
 
-    await update.message.reply_text("Memory resetiran ✅")
+    await update.message.reply_text("Memory resetiran.")
 
 
-# =========================
-# OPENAI CHAT
-# =========================
+# -------------------------------------------------
+# MAIN MESSAGE HANDLER
+# -------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    user_text = update.message.text or ""
+    text = update.message.text
 
     try:
-        memory = load_memory(user_id) or []
+        save_memory(user_id, "user", text)
 
-        messages = [
-            {"role": "system", "content": "Ti si prijateljski AI asistent."}
-        ]
+        should_save = await should_store_memory(text)
+        if should_save:
+            save_vector_memory(user_id, text)
 
-        for m in memory:
-            if m.get("role") and m.get("content"):
-                messages.append({
-                    "role": m["role"],
-                    "content": m["content"]
-                })
+        memory = load_memory(user_id)
 
-        messages.append({"role": "user", "content": user_text})
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Vinka AI assistant. Be friendly."
+                },
+                *memory,
+                {"role": "user", "content": text}
+            ]
+        )
 
-        # ⭐ RETRY LOGIC
-        for attempt in range(2):
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4.1-mini",
-                    messages=messages,
-                    temperature=0.7,
-                    timeout=60
-                )
-                break
-            except Exception as e:
-                print("OpenAI attempt failed:", e)
-                if attempt == 1:
-                    raise e
+        reply = r.choices[0].message.content
 
-        reply = response.choices[0].message.content
-
-        save_memory(user_id, "user", user_text)
         save_memory(user_id, "assistant", reply)
 
         await update.message.reply_text(reply)
 
     except Exception as e:
-        print("FINAL ERROR:", e)
-
-        # ⭐ FALLBACK MEMORY REPLY
-        memory = load_memory(user_id) or []
-
-    
-    if "što volim" in user_text.lower():
-
-        prefs = []
-
-        for m in memory:
-            if m.get("role") == "user":
-                content = m.get("content", "").lower()
-
-                if "zapamti" in content and "volim" in content:
-                    prefs.append(m["content"])
-
-        if prefs:
-            last_pref = prefs[-1]
-
-            last_pref = last_pref.replace("zapamti da ", "")
-            last_pref = last_pref.replace("zapamti ", "")
-
-            await update.message.reply_text(
-                f"Rekao si da {last_pref}"
-            )
-            return
-
-
+        print("ERROR:", e)
         await update.message.reply_text(
             "Ups 😅 AI server je malo spor, probaj opet."
         )
 
 
-
-# =========================
+# -------------------------------------------------
 # REGISTER HANDLERS
-# =========================
+# -------------------------------------------------
 
-def setup_handlers(app):
-
+def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
-
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
