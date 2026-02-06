@@ -81,6 +81,68 @@ def load_memory(user_id, limit=12):
         rows.reverse()
         return rows
 
+async def classify_memory_importance(text):
+    try:
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+Classify if message contains important long term memory.
+
+Return ONLY JSON:
+{
+ "save": true or false
+}
+"""
+                },
+                {"role": "user", "content": text}
+            ],
+            temperature=0
+        )
+
+        import json
+        return json.loads(r.choices[0].message.content)
+
+    except:
+        return {"save": False}
+
+def save_vector_memory(user_id, text):
+    try:
+        emb = get_embedding(text)
+
+        if emb is None:
+            return
+
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO vector_memory (user_id, content, embedding)
+                VALUES (%s, %s, %s)
+            """, (user_id, text, str(emb)))
+
+    except Exception as e:
+        print("Vector save error:", e)
+
+def semantic_search(user_id, text, limit=3):
+    try:
+        emb = get_embedding(text)
+
+        with db_conn.cursor() as cur:
+            cur.execute("""
+                SELECT content
+                FROM vector_memory
+                WHERE user_id = %s
+                ORDER BY embedding <-> %s
+                LIMIT %s
+            """, (user_id, str(emb), limit))
+
+            return [r["content"] for r in cur.fetchall()]
+
+    except Exception as e:
+        print("Semantic search error:", e)
+        return []
+
 
 # -------------------------------------------------
 # EMBEDDING (SAFE VERSION)
@@ -182,23 +244,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         save_memory(user_id, "user", text)
+        decision = await classify_memory_importance(text)
+
+        if decision.get("save"):
+            save_vector_memory(user_id, text)
 
         should_save = await should_store_memory(text)
         if should_save:
             save_vector_memory(user_id, text)
 
         memory = load_memory(user_id)
+        semantic_mem = semantic_search(user_id, text)
+
+        memory_context = ""
+        if semantic_mem:
+            memory_context = "User memory:\n" + "\n".join(semantic_mem)
 
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are Vinka AI assistant. Be friendly."
+             {
+                "role": "system",
+                "content": f"""
+            You are Vinka AI assistant.
+
+            Use this memory if relevant:
+            {memory_context}
+            """
                 },
                 *memory,
                 {"role": "user", "content": text}
-            ]
+        ]
+
         )
 
         reply = r.choices[0].message.content
