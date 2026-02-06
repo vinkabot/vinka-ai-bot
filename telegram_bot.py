@@ -7,6 +7,8 @@ from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
 
 from openai import OpenAI
 
+
+
 # --------------------------------------------------
 # OpenAI
 # --------------------------------------------------
@@ -39,7 +41,7 @@ def init_db():
             user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
-            importance INTEGER DEFAULT 0.5,
+            importance INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
@@ -47,7 +49,7 @@ def init_db():
     try:
         cur.execute("""
             ALTER TABLE user_memory
-            ADD COLUMN IF NOT EXISTS importance FLOAT DEFAULT 0.5;
+            ADD COLUMN IF NOT EXISTS importance FLOAT DEFAULT 1;
         """)
     except Exception:
         pass
