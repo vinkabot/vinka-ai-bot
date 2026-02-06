@@ -39,10 +39,19 @@ def init_db():
             user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
-            importance INTEGER DEFAULT 1,
+            importance INTEGER DEFAULT 0.5,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+    # Add importance column if missing
+    try:
+        cur.execute("""
+            ALTER TABLE user_memory
+            ADD COLUMN IF NOT EXISTS importance FLOAT DEFAULT 0.5;
+        """)
+    except Exception:
+        pass
+
 
 init_db()
 
