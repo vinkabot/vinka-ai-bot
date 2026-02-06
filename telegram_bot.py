@@ -1,4 +1,5 @@
 import os
+import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -11,6 +12,10 @@ from telegram.ext import (
 )
 
 from openai import OpenAI
+
+# -------------------------------------------------
+# OPENAI
+# -------------------------------------------------
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -27,6 +32,10 @@ db_conn = psycopg2.connect(
 
 db_conn.autocommit = True
 
+
+# -------------------------------------------------
+# INIT DB
+# -------------------------------------------------
 
 def init_db():
     with db_conn.cursor() as cur:
@@ -55,9 +64,8 @@ def init_db():
 init_db()
 
 # -------------------------------------------------
-# MEMORY HELPERS
+# BASIC MEMORY
 # -------------------------------------------------
-
 
 def save_memory(user_id, role, content):
     with db_conn.cursor() as cur:
@@ -81,6 +89,26 @@ def load_memory(user_id, limit=12):
         rows.reverse()
         return rows
 
+
+# -------------------------------------------------
+# EMBEDDINGS
+# -------------------------------------------------
+
+def get_embedding(text):
+    try:
+        r = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        return r.data[0].embedding
+    except:
+        return None
+
+
+# -------------------------------------------------
+# SMART MEMORY CLASSIFIER (GOD MODE)
+# -------------------------------------------------
+
 async def classify_memory_importance(text):
     try:
         r = client.chat.completions.create(
@@ -102,11 +130,15 @@ Return ONLY JSON:
             temperature=0
         )
 
-        import json
         return json.loads(r.choices[0].message.content)
 
     except:
         return {"save": False}
+
+
+# -------------------------------------------------
+# VECTOR MEMORY SAVE
+# -------------------------------------------------
 
 def save_vector_memory(user_id, text):
     try:
@@ -124,9 +156,17 @@ def save_vector_memory(user_id, text):
     except Exception as e:
         print("Vector save error:", e)
 
+
+# -------------------------------------------------
+# SEMANTIC SEARCH
+# -------------------------------------------------
+
 def semantic_search(user_id, text, limit=3):
     try:
         emb = get_embedding(text)
+
+        if emb is None:
+            return []
 
         with db_conn.cursor() as cur:
             cur.execute("""
@@ -145,82 +185,12 @@ def semantic_search(user_id, text, limit=3):
 
 
 # -------------------------------------------------
-# EMBEDDING (SAFE VERSION)
-# -------------------------------------------------
-
-def get_embedding(text):
-    try:
-        r = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return r.data[0].embedding
-    except:
-        return None
-
-
-# -------------------------------------------------
-# VECTOR MEMORY SAFE (NO CRASH)
-# -------------------------------------------------
-
-def save_vector_memory(user_id, text):
-    emb = get_embedding(text)
-
-    if emb is None:
-        return
-
-    try:
-        with db_conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO vector_memory (user_id, content, embedding)
-                VALUES (%s, %s, %s)
-            """, (user_id, text, str(emb)))
-    except:
-        pass
-
-
-# -------------------------------------------------
-# SMART MEMORY DECISION
-# -------------------------------------------------
-
-async def should_store_memory(text):
-    try:
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
-Decide if this message is important long term memory.
-
-Store:
-- preferences
-- personal facts
-- identity
-- likes/dislikes
-- goals
-
-Return only: yes or no
-"""
-                },
-                {"role": "user", "content": text}
-            ]
-        )
-
-        return "yes" in r.choices[0].message.content.lower()
-
-    except:
-        return False
-
-
-# -------------------------------------------------
 # TELEGRAM COMMANDS
 # -------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bok! Ja sam Vinka AI 🤖\n"
-        "Možeš pričati sa mnom normalno.\n"
         "Mogu zapamtiti stvari o tebi 💾"
     )
 
@@ -230,6 +200,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with db_conn.cursor() as cur:
         cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM vector_memory WHERE user_id = %s", (user_id,))
 
     await update.message.reply_text("Memory resetiran.")
 
@@ -239,43 +210,46 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = str(update.effective_user.id)
     text = update.message.text
 
     try:
+        # Save conversation memory
         save_memory(user_id, "user", text)
+
+        # GOD MODE smart save decision
         decision = await classify_memory_importance(text)
 
         if decision.get("save"):
             save_vector_memory(user_id, text)
 
-        should_save = await should_store_memory(text)
-        if should_save:
-            save_vector_memory(user_id, text)
-
+        # Load normal memory
         memory = load_memory(user_id)
+
+        # Semantic recall
         semantic_mem = semantic_search(user_id, text)
 
         memory_context = ""
         if semantic_mem:
             memory_context = "User memory:\n" + "\n".join(semantic_mem)
 
+        # OpenAI response
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-             {
-                "role": "system",
-                "content": f"""
-            You are Vinka AI assistant.
+                {
+                    "role": "system",
+                    "content": f"""
+You are Vinka AI assistant.
 
-            Use this memory if relevant:
-            {memory_context}
-            """
+Use memory if relevant:
+{memory_context}
+"""
                 },
                 *memory,
                 {"role": "user", "content": text}
-        ]
-
+            ]
         )
 
         reply = r.choices[0].message.content
@@ -286,6 +260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         print("ERROR:", e)
+
         await update.message.reply_text(
             "Ups 😅 AI server je malo spor, probaj opet."
         )
