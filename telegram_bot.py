@@ -14,6 +14,13 @@ from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+def get_embedding(text: str):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
 
 # --------------------------------------------------
 # DATABASE
@@ -36,29 +43,31 @@ db_conn.autocommit = True
 def init_db():
     with db_conn.cursor() as cur:
 
-        # Conversation memory
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
-            importance FLOAT DEFAULT 1,
+            importance INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # Permanent profile memory
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS user_profile (
-            user_id TEXT PRIMARY KEY,
-            name TEXT,
-            city TEXT,
-            favorite_food TEXT,
-            favorite_color TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE EXTENSION IF NOT EXISTS vector;
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vector_memory (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT,
+            content TEXT,
+            embedding VECTOR(1536),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+
 
 init_db()
 
