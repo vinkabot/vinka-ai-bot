@@ -8,16 +8,16 @@ from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
 
-# =========================================================
+# --------------------------------------------------
 # OPENAI
-# =========================================================
+# --------------------------------------------------
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-# =========================================================
+# --------------------------------------------------
 # DATABASE
-# =========================================================
+# --------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -29,61 +29,81 @@ db_conn = psycopg2.connect(
 db_conn.autocommit = True
 
 
-# =========================================================
+# --------------------------------------------------
 # DB INIT
-# =========================================================
+# --------------------------------------------------
 
 def init_db():
     with db_conn.cursor() as cur:
+
+        # Conversation memory
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
-            importance INTEGER DEFAULT 1,
+            importance FLOAT DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        try:
-            cur.execute("""
-                ALTER TABLE user_memory
-                ADD COLUMN IF NOT EXISTS importance INTEGER DEFAULT 1;
-            """)
-        except Exception:
-            pass
+        # Permanent profile memory
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_profile (
+            user_id TEXT PRIMARY KEY,
+            name TEXT,
+            city TEXT,
+            favorite_food TEXT,
+            favorite_color TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
 
 init_db()
 
 
-# =========================================================
+# --------------------------------------------------
 # IMPORTANCE DETECTION
-# =========================================================
+# --------------------------------------------------
 
-def detect_importance(text: str) -> int:
+def detect_importance(text: str) -> float:
     text = text.lower()
 
-    if any(x in text for x in [
-        "zovem se",
-        "moje ime je",
-        "ja sam"
-    ]):
-        return 4
+    if any(x in text for x in ["zovem se", "moje ime", "ja sam"]):
+        return 5
 
-    if any(x in text for x in [
-        "volim",
-        "obožavam",
-        "najdraže"
-    ]):
+    if any(x in text for x in ["volim", "obožavam", "najdraže"]):
         return 3
 
     return 1
 
 
-# =========================================================
+# --------------------------------------------------
+# PROFILE FACT EXTRACTION
+# --------------------------------------------------
+
+def extract_profile_fact(text: str):
+    t = text.lower()
+
+    if "zovem se" in t:
+        return ("name", text.split("zovem se")[-1].strip())
+
+    if "živim u" in t:
+        return ("city", text.split("živim u")[-1].strip())
+
+    if "volim pizzu" in t:
+        return ("favorite_food", "pizza")
+
+    if "volim crnu" in t:
+        return ("favorite_color", "crna")
+
+    return None
+
+
+# --------------------------------------------------
 # MEMORY HELPERS
-# =========================================================
+# --------------------------------------------------
 
 def save_memory(user_id: str, role: str, content: str):
     importance = detect_importance(content)
@@ -101,7 +121,6 @@ def get_memory_context(user_id: str) -> str:
         SELECT content
         FROM user_memory
         WHERE user_id = %s
-        AND role = 'user'            
         ORDER BY importance DESC, created_at DESC
         LIMIT 5
         """, (user_id,))
@@ -116,27 +135,68 @@ def get_memory_context(user_id: str) -> str:
 
 def reset_memory(user_id: str):
     with db_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_memory WHERE user_id = %s",
-            (user_id,)
-        )
+        cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
 
 
-# =========================================================
+# --------------------------------------------------
+# PROFILE HELPERS
+# --------------------------------------------------
+
+def save_profile_fact(user_id: str, field: str, value: str):
+    with db_conn.cursor() as cur:
+        cur.execute(f"""
+        INSERT INTO user_profile (user_id, {field})
+        VALUES (%s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            {field} = EXCLUDED.{field},
+            updated_at = CURRENT_TIMESTAMP
+        """, (user_id, value))
+
+
+def get_profile_context(user_id: str) -> str:
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        SELECT *
+        FROM user_profile
+        WHERE user_id = %s
+        """, (user_id,))
+
+        row = cur.fetchone()
+
+    if not row:
+        return ""
+
+    lines = []
+
+    if row["name"]:
+        lines.append(f"Ime: {row['name']}")
+    if row["city"]:
+        lines.append(f"Grad: {row['city']}")
+    if row["favorite_food"]:
+        lines.append(f"Omiljena hrana: {row['favorite_food']}")
+    if row["favorite_color"]:
+        lines.append(f"Omiljena boja: {row['favorite_color']}")
+
+    return "\n".join(lines)
+
+
+# --------------------------------------------------
 # OPENAI REPLY
-# =========================================================
+# --------------------------------------------------
 
-def ask_openai(user_text: str, memory_context: str) -> str:
+def ask_openai(user_text: str, context: str) -> str:
     try:
         messages = [
             {
                 "role": "system",
                 "content": f"""
-Ti si Vinka AI, pametan Telegram AI asistent.
-Koristi memory ako postoji.
+Ti si Vinka AI — Telegram AI asistent.
 
-Memory:
-{memory_context}
+Koristi memory i profile ako postoje.
+
+CONTEXT:
+{context}
 """
             },
             {"role": "user", "content": user_text}
@@ -155,9 +215,9 @@ Memory:
         return "Ups 😅 AI server je malo spor, probaj opet."
 
 
-# =========================================================
+# --------------------------------------------------
 # TELEGRAM HANDLERS
-# =========================================================
+# --------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -170,38 +230,33 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_memory(user_id)
     await update.message.reply_text("Memory resetiran.")
 
-def is_memory_question(text: str) -> bool:
-    text = text.lower()
-
-    patterns = [
-        "što volim",
-        "šta volim",
-        "što znaš o meni",
-        "šta znaš o meni",
-        "kako se zovem",
-        "tko sam",
-        "ko sam",
-        "što sam rekao",
-        "šta sam rekao"
-    ]
-
-    return any(p in text for p in patterns)
-
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user_text = update.message.text
 
     try:
+        # Save chat memory
         save_memory(user_id, "user", user_text)
 
-        memory_context = get_memory_context(user_id)
+        # Save profile fact if detected
+        fact = extract_profile_fact(user_text)
+        if fact:
+            field, value = fact
+            save_profile_fact(user_id, field, value)
 
-        # SMART MEMORY odgovor
-        if is_memory_question(user_text) and memory_context:
-            reply = f"Znam ovo o tebi:\n{memory_context}"
-        else:
-            reply = ask_openai(user_text, memory_context)
+        memory_context = get_memory_context(user_id)
+        profile_context = get_profile_context(user_id)
+
+        full_context = f"""
+PROFILE:
+{profile_context}
+
+MEMORY:
+{memory_context}
+"""
+
+        reply = ask_openai(user_text, full_context)
 
         save_memory(user_id, "assistant", reply)
 
@@ -212,9 +267,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
 
 
-# =========================================================
-# REGISTER HANDLERS
-# =========================================================
+# --------------------------------------------------
+# REGISTER
+# --------------------------------------------------
 
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
