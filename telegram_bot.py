@@ -169,6 +169,23 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_memory(user_id)
     await update.message.reply_text("Memory resetiran.")
 
+def is_memory_question(text: str) -> bool:
+    text = text.lower()
+
+    patterns = [
+        "što volim",
+        "šta volim",
+        "što znaš o meni",
+        "šta znaš o meni",
+        "kako se zovem",
+        "tko sam",
+        "ko sam",
+        "što sam rekao",
+        "šta sam rekao"
+    ]
+
+    return any(p in text for p in patterns)
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -179,7 +196,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         memory_context = get_memory_context(user_id)
 
-        reply = ask_openai(user_text, memory_context)
+        # SMART MEMORY odgovor
+        if is_memory_question(user_text) and memory_context:
+            reply = f"Znam ovo o tebi:\n{memory_context}"
+        else:
+            reply = ask_openai(user_text, memory_context)
+
 
         save_memory(user_id, "assistant", reply)
 
