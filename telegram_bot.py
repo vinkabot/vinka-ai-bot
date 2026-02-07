@@ -9,8 +9,10 @@ from openai import OpenAI
 
 
 # =====================================================
-# OPENAI
+# CONFIG
 # =====================================================
+
+ADMIN_ID = os.getenv("ADMIN_ID")  # stavi svoj Telegram ID u .env
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -36,7 +38,6 @@ db_conn.autocommit = True
 def init_db():
     with db_conn.cursor() as cur:
 
-        # MEMORY TABLE
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
@@ -48,7 +49,6 @@ def init_db():
         );
         """)
 
-        # USAGE TABLE (MONETIZATION BASE)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_usage (
             user_id TEXT PRIMARY KEY,
@@ -62,7 +62,7 @@ init_db()
 
 
 # =====================================================
-# IMPORTANCE MEMORY
+# IMPORTANCE
 # =====================================================
 
 def detect_importance(text: str) -> int:
@@ -78,11 +78,12 @@ def detect_importance(text: str) -> int:
 
 
 # =====================================================
-# USAGE HELPERS
+# USAGE SYSTEM
 # =====================================================
 
 def check_daily_reset(user_id: str):
     with db_conn.cursor() as cur:
+
         cur.execute("""
         SELECT last_reset
         FROM user_usage
@@ -138,7 +139,7 @@ def can_user_chat(user_id: str):
 
 
 # =====================================================
-# MEMORY HELPERS
+# MEMORY
 # =====================================================
 
 def save_memory(user_id: str, role: str, content: str):
@@ -172,10 +173,7 @@ def get_memory_context(user_id: str) -> str:
 
 def reset_memory(user_id: str):
     with db_conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_memory WHERE user_id = %s",
-            (user_id,)
-        )
+        cur.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
 
 
 # =====================================================
@@ -227,8 +225,14 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_memory(user_id)
     await update.message.reply_text("Memory resetiran.")
 
+
+# PRO UNLOCK (ADMIN ONLY)
 async def pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
+
+    if ADMIN_ID and user_id != ADMIN_ID:
+        await update.message.reply_text("Nemaš dozvolu.")
+        return
 
     with db_conn.cursor() as cur:
         cur.execute("""
@@ -237,9 +241,7 @@ async def pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         WHERE user_id = %s
         """, (user_id,))
 
-    await update.message.reply_text(
-        "🎉 Pro status aktiviran!"
-    )
+    await update.message.reply_text("🎉 Pro status aktiviran!")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,7 +249,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     try:
-        # USAGE CONTROL
         check_daily_reset(user_id)
 
         if not can_user_chat(user_id):
@@ -258,12 +259,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         increment_usage(user_id)
 
-        # MEMORY SAVE
         save_memory(user_id, "user", user_text)
 
         memory_context = get_memory_context(user_id)
 
-        # OPENAI REPLY
         reply = ask_openai(user_text, memory_context)
 
         save_memory(user_id, "assistant", reply)
@@ -276,11 +275,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================================================
-# REGISTER HANDLERS
+# REGISTER
 # =====================================================
 
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(CommandHandler("pro", pro))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
