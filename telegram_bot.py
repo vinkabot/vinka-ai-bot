@@ -101,6 +101,7 @@ def get_memory_context(user_id: str) -> str:
         SELECT content
         FROM user_memory
         WHERE user_id = %s
+        AND role = 'user'            
         ORDER BY importance DESC, created_at DESC
         LIMIT 5
         """, (user_id,))
@@ -201,7 +202,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = f"Znam ovo o tebi:\n{memory_context}"
         else:
             reply = ask_openai(user_text, memory_context)
-
 
         save_memory(user_id, "assistant", reply)
 
