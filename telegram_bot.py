@@ -227,6 +227,20 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_memory(user_id)
     await update.message.reply_text("Memory resetiran.")
 
+async def pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+
+    with db_conn.cursor() as cur:
+        cur.execute("""
+        UPDATE user_usage
+        SET is_pro = TRUE
+        WHERE user_id = %s
+        """, (user_id,))
+
+    await update.message.reply_text(
+        "🎉 Pro status aktiviran!"
+    )
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -269,3 +283,4 @@ def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(CommandHandler("pro", pro))
