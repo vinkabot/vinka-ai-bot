@@ -7,31 +7,26 @@ from telegram.ext import Application
 
 from telegram_bot import register_handlers
 
-# --------------------------------------------------
-# Flask app
-# --------------------------------------------------
-
 app = Flask(__name__)
 
 telegram_app = None
+loop = None
 
 
-# --------------------------------------------------
-# Health check
-# --------------------------------------------------
-
+# -----------------------------
+# HEALTH CHECK
+# -----------------------------
 @app.route("/")
 def health():
     return "Bot alive"
 
 
-# --------------------------------------------------
-# Telegram webhook
-# --------------------------------------------------
-
+# -----------------------------
+# TELEGRAM WEBHOOK
+# -----------------------------
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
-    global telegram_app
+    global telegram_app, loop
 
     if telegram_app is None:
         telegram_app = Application.builder().token(
@@ -46,8 +41,8 @@ def telegram_webhook():
 
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(telegram_app.process_update(update))
+    loop.run_until_complete(
+        telegram_app.process_update(update)
+    )
 
     return "ok"
