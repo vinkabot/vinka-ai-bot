@@ -1,6 +1,4 @@
 import os
-from datetime import datetime
-
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -9,21 +7,17 @@ from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes
 
 from openai import OpenAI
 
+# --------------------------------------------------
+# OPENAI
+# --------------------------------------------------
 
-# =====================================================
-# CONFIG
-# =====================================================
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = os.getenv("ADMIN_ID")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-
-# =====================================================
+# --------------------------------------------------
 # DATABASE
-# =====================================================
+# --------------------------------------------------
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 db_conn = psycopg2.connect(
     DATABASE_URL,
@@ -32,320 +26,220 @@ db_conn = psycopg2.connect(
 
 db_conn.autocommit = True
 
-
-# =====================================================
+# --------------------------------------------------
 # DB INIT
-# =====================================================
+# --------------------------------------------------
 
 def init_db():
     with db_conn.cursor() as cur:
 
-        # MEMORY
+        # MEMORY TABLE
         cur.execute("""
         CREATE TABLE IF NOT EXISTS user_memory (
             id SERIAL PRIMARY KEY,
-            user_id TEXT,
-            role TEXT,
-            content TEXT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            importance FLOAT DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # CLIENTS
+        # CLIENT TABLE
         cur.execute("""
         CREATE TABLE IF NOT EXISTS clients (
             client_code TEXT PRIMARY KEY,
             name TEXT,
-            system_prompt TEXT
+            prompt TEXT
         );
         """)
-
-        # USER CLIENT MAP
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS user_clients (
-            user_id TEXT PRIMARY KEY,
-            client_code TEXT
-        );
-        """)
-
-        # PLANS
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS plans (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            price_monthly INTEGER,
-            message_limit INTEGER
-        );
-        """)
-
-        # SUBSCRIPTIONS
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS client_subscriptions (
-            client_code TEXT PRIMARY KEY,
-            plan_id INTEGER,
-            status TEXT,
-            current_period_end TIMESTAMP
-        );
-        """)
-
-        # USAGE
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS client_usage (
-            client_code TEXT,
-            month TEXT,
-            messages_used INTEGER DEFAULT 0,
-            PRIMARY KEY (client_code, month)
-        );
-        """)
-
-        # DEFAULT PLANS
-        cur.execute("""
-        INSERT INTO plans (name, price_monthly, message_limit)
-        VALUES
-        ('free', 0, 200),
-        ('pro', 39, 2000),
-        ('business', 99, 10000)
-        ON CONFLICT DO NOTHING;
-        """)
-
 
 init_db()
 
+# --------------------------------------------------
+# IMPORTANCE DETECTION
+# --------------------------------------------------
 
-# =====================================================
-# HELPERS
-# =====================================================
+def detect_importance(text: str) -> float:
+    text = text.lower()
 
-def is_admin(user_id):
-    return str(user_id) == str(ADMIN_ID)
+    if any(x in text for x in ["zovem se", "ja sam", "moje ime"]):
+        return 5
 
+    if any(x in text for x in ["volim", "obožavam", "najdraže"]):
+        return 3
 
-# CLIENT CONFIG
+    return 1
 
-def set_user_client(user_id, client_code):
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        INSERT INTO user_clients (user_id, client_code)
-        VALUES (%s, %s)
-        ON CONFLICT (user_id)
-        DO UPDATE SET client_code = EXCLUDED.client_code
-        """, (user_id, client_code))
-
-
-def get_user_client(user_id):
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        SELECT client_code FROM user_clients WHERE user_id = %s
-        """, (user_id,))
-        row = cur.fetchone()
-    return row["client_code"] if row else None
-
-
-def get_client_prompt(client_code):
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        SELECT system_prompt FROM clients WHERE client_code = %s
-        """, (client_code,))
-        row = cur.fetchone()
-    return row["system_prompt"] if row else "Ti si AI asistent."
-
-
-# BILLING
-
-def get_client_plan(client_code):
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        SELECT p.name, p.message_limit, s.status
-        FROM client_subscriptions s
-        JOIN plans p ON p.id = s.plan_id
-        WHERE s.client_code = %s
-        """, (client_code,))
-        return cur.fetchone()
-
-
-def increment_usage(client_code):
-    month = datetime.utcnow().strftime("%Y-%m")
-
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        INSERT INTO client_usage (client_code, month, messages_used)
-        VALUES (%s, %s, 1)
-        ON CONFLICT (client_code, month)
-        DO UPDATE SET messages_used = client_usage.messages_used + 1
-        """, (client_code, month))
-
-
-def can_client_send(client_code):
-    plan = get_client_plan(client_code)
-
-    if not plan:
-        return True
-
-    if plan["status"] != "active":
-        return False
-
-    month = datetime.utcnow().strftime("%Y-%m")
-
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        SELECT messages_used FROM client_usage
-        WHERE client_code = %s AND month = %s
-        """, (client_code, month))
-        row = cur.fetchone()
-
-    used = row["messages_used"] if row else 0
-    return used < plan["message_limit"]
-
-
+# --------------------------------------------------
 # MEMORY
+# --------------------------------------------------
 
 def save_memory(user_id, role, content):
+    importance = detect_importance(content)
+
     with db_conn.cursor() as cur:
         cur.execute("""
-        INSERT INTO user_memory (user_id, role, content)
-        VALUES (%s, %s, %s)
-        """, (user_id, role, content))
+        INSERT INTO user_memory (user_id, role, content, importance)
+        VALUES (%s, %s, %s, %s)
+        """, (user_id, role, content, importance))
 
 
 def get_memory_context(user_id):
     with db_conn.cursor() as cur:
         cur.execute("""
-        SELECT content FROM user_memory
+        SELECT content
+        FROM user_memory
         WHERE user_id = %s
-        ORDER BY created_at DESC
+        ORDER BY importance DESC, created_at DESC
         LIMIT 5
         """, (user_id,))
+
         rows = cur.fetchall()
 
-    return "\n".join(r["content"] for r in rows) if rows else ""
+    return "\n".join([r["content"] for r in rows])
 
+def reset_memory(user_id):
+    with db_conn.cursor() as cur:
+        cur.execute("DELETE FROM user_memory WHERE user_id=%s", (user_id,))
 
-# OPENAI
+# --------------------------------------------------
+# CLIENT SYSTEM
+# --------------------------------------------------
+
+def get_client_prompt(client_code):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT prompt FROM clients WHERE client_code=%s",
+            (client_code,)
+        )
+        row = cur.fetchone()
+
+    if row and row["prompt"]:
+        return row["prompt"]
+
+    return "Ti si AI asistent."
+
+# --------------------------------------------------
+# OPENAI REPLY
+# --------------------------------------------------
 
 def ask_openai(user_text, memory_context, client_prompt):
 
-    messages = [
-        {
-            "role": "system",
-            "content": f"{client_prompt}\n\nMemory:\n{memory_context}"
-        },
-        {"role": "user", "content": user_text}
-    ]
+    system_prompt = f"""
+{client_prompt}
+
+Koristi memory ako postoji.
+
+Memory:
+{memory_context}
+"""
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        messages=messages,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text}
+        ],
         temperature=0.7
     )
 
     return response.choices[0].message.content
 
-
-# =====================================================
-# ADMIN COMMANDS
-# =====================================================
-
-async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        return
-
-    client_code = context.args[0]
-    name = " ".join(context.args[1:])
-
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        INSERT INTO clients (client_code, name, system_prompt)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (client_code)
-        DO UPDATE SET name = EXCLUDED.name
-        """, (client_code, name, "Ti si AI asistent."))
-
-    await update.message.reply_text("Client dodan.")
-
-
-async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    client_code = context.args[0]
-    prompt = " ".join(context.args[1:])
-
-    with db_conn.cursor() as cur:
-        cur.execute("""
-        UPDATE clients SET system_prompt = %s WHERE client_code = %s
-        """, (prompt, client_code))
-
-    await update.message.reply_text("Prompt updatean.")
-
-
-async def list_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    with db_conn.cursor() as cur:
-        cur.execute("SELECT client_code, name FROM clients")
-        rows = cur.fetchall()
-
-    text = "\n".join([f"{r['client_code']} → {r['name']}" for r in rows])
-    await update.message.reply_text(text or "Nema klijenata.")
-
-
-# =====================================================
-# USER HANDLERS
-# =====================================================
+# --------------------------------------------------
+# COMMANDS
+# --------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user_id = str(update.effective_user.id)
+    client_code = None
 
     if context.args:
         client_code = context.args[0]
-        set_user_client(user_id, client_code)
-        await update.message.reply_text("Bot aktiviran.")
-    else:
-        await update.message.reply_text("Pošaljite client kod.")
+        context.user_data["client_code"] = client_code
 
+    await update.message.reply_text("Bot aktiviran.")
+
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    reset_memory(user_id)
+    await update.message.reply_text("Memory resetiran.")
+
+
+async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        code = context.args[0]
+        name = " ".join(context.args[1:])
+
+        with db_conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO clients (client_code, name)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+            """, (code, name))
+
+        await update.message.reply_text("Client dodan.")
+
+    except:
+        await update.message.reply_text("Format: /add_client code Name")
+
+
+async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        code = context.args[0]
+        prompt = " ".join(context.args[1:])
+
+        with db_conn.cursor() as cur:
+            cur.execute("""
+            UPDATE clients SET prompt=%s WHERE client_code=%s
+            """, (prompt, code))
+
+        await update.message.reply_text("Prompt postavljen.")
+
+    except:
+        await update.message.reply_text("Format: /set_prompt code prompt")
+
+# --------------------------------------------------
+# MESSAGE HANDLER
+# --------------------------------------------------
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = str(update.effective_user.id)
-    user_text = update.message.text
+    text = update.message.text
 
-    client_code = get_user_client(user_id)
-
-    if not client_code:
-        await update.message.reply_text("Pokrenite bot pomoću client koda.")
-        return
-
-    if not can_client_send(client_code):
-        await update.message.reply_text("Dosegnut mjesečni limit.")
-        return
-
-    increment_usage(client_code)
+    client_code = context.user_data.get("client_code", "default")
 
     client_prompt = get_client_prompt(client_code)
 
-    save_memory(user_id, "user", user_text)
-    memory_context = get_memory_context(user_id)
+    try:
+        save_memory(user_id, "user", text)
 
-    reply = ask_openai(user_text, memory_context, client_prompt)
+        memory = get_memory_context(user_id)
 
-    save_memory(user_id, "assistant", reply)
+        reply = ask_openai(text, memory, client_prompt)
 
-    await update.message.reply_text(reply)
+        save_memory(user_id, "assistant", reply)
 
+        await update.message.reply_text(reply)
 
-# =====================================================
+    except Exception as e:
+        print("Handler error:", e)
+        await update.message.reply_text("Ups 😅 nešto je pošlo po zlu.")
+
+# --------------------------------------------------
 # REGISTER
-# =====================================================
+# --------------------------------------------------
 
 def register_handlers(app):
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reset", reset))
+
     app.add_handler(CommandHandler("add_client", add_client))
     app.add_handler(CommandHandler("set_prompt", set_prompt))
-    app.add_handler(CommandHandler("list_clients", list_clients))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
