@@ -187,20 +187,31 @@ async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     try:
-        code = context.args[0]
-        prompt = " ".join(context.args[1:])
+        parts = update.message.text.split(" ", 2)
+
+        if len(parts) < 3:
+            await update.message.reply_text(
+                "Format: /set_prompt code prompt"
+            )
+            return
+
+        code = parts[1]
+        prompt = parts[2]
 
         with db_conn.cursor() as cur:
             cur.execute("""
-            UPDATE clients SET prompt=%s WHERE client_code=%s
+                UPDATE clients
+                SET system_prompt = %s
+                WHERE code = %s
             """, (prompt, code))
 
         await update.message.reply_text("Prompt postavljen.")
 
-    except:
-        await update.message.reply_text("Format: /set_prompt code prompt")
+    except Exception as e:
+        print("Set prompt error:", e)
+        await update.message.reply_text("Greška kod set_prompt.")
+
 
 # --------------------------------------------------
 # MESSAGE HANDLER
